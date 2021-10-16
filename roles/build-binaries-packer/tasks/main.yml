@@ -1,0 +1,112 @@
+---
+- name: fail if component name to build is not provided
+  fail: msg="Need 'component=some_example' as extra argument for this playbook to work."
+  when: component is not defined or component|trim == ''
+
+- name: get time stamp and current head commit id
+  shell: date +%Y%m%d%H%M%S; git rev-parse HEAD
+  args:
+    chdir: "{{playbook_dir}}"
+  register: shell_output
+
+- name: set fact about build directory and other variables
+  set_fact:
+    packer_component: "{{component|trim}}"
+    packer_build_dir: "{{playbook_dir}}/packer-{{component|trim}}-build"
+    repo_head_commit_id: "{{shell_output.stdout_lines[-1]}}"
+    packer_runtime: "{{shell_output.stdout_lines[0]}}"
+    packer_build_failed: false
+    packer_log_file: "{{playbook_dir}}/packer-build-{{shell_output.stdout_lines[0]}}.log"
+
+- name: ensure previous artifacts directory doesn't exists
+  file: path={{packer_artifacts_dir}} state=absent
+
+- name: ensure temp build directories exists
+  file: path={{item}} state=directory mode=0755 owner=root group=root
+  with_items:
+    - "{{packer_artifacts_dir}}/{{packer_component}}"
+    - "{{packer_build_dir}}"
+
+- name: get current instance region
+  uri:
+    url: http://169.254.169.254/latest/dynamic/instance-identity/document
+  register: aws_meta_info
+  ignore_errors: yes
+
+- name: set aws region
+  set_fact:
+    aws_region: "{{aws_meta_info.json.region if aws_meta_info.rc == 0 else 'us-east-1'}}"
+
+- name: find latest amazon image id for x86_64 instances
+  command: >
+    aws --region {{aws_region}} ssm get-parameters \
+    --names /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2 \
+    --query 'Parameters[0].[Value]' --output text
+  register: amazon_ami_x86_64
+
+- name: find latest amazon image id for arm64 instances
+  command: >
+    aws --region {{aws_region}} ssm get-parameters \
+    --names /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-arm64-gp2 \
+    --query 'Parameters[0].[Value]' --output text
+  register: amazon_ami_arm64
+
+- name: find latest centos image id for x86_64 instances
+  command: >
+    aws --region {{aws_region}} ec2 describe-images \
+    --owners {{centos_account_id}} \
+    --filters 'Name=state,Values=available' 'Name=architecture,Values=x86_64' 'Name=name,Values=CentOS 7*' \
+    --query 'sort_by(Images, &CreationDate)[-1].[ImageId]' --output text
+  register: centos_ami_x86_64
+
+- name: find latest centos image id for arm64 instances
+  command: >
+    aws --region {{aws_region}} ec2 describe-images \
+    --owners {{centos_account_id}} \
+    --filters 'Name=state,Values=available' 'Name=architecture,Values=arm64' 'Name=name,Values=CentOS 7*' \
+    --query 'sort_by(Images, &CreationDate)[-1].[ImageId]' --output text
+  register: centos_ami_arm64
+
+- name: copy packer template file to build directory
+  template: src=builders/{{packer_component}}-aws.pkr.hcl dest={{packer_build_dir}}/build.pkr.hcl owner=root group=root mode=0600
+
+- name: copy playbook file that will run in packer host
+  template: src=playbooks/{{packer_component}}-tasks.yml dest={{playbook_dir}}/packer-build-tasks-{{packer_runtime}}.yml
+
+- name: copy user data file for instance launch
+  template: src=aws_user_data.sh dest={{packer_build_dir}}/aws_user_data.sh owner=root group=root mode=0755
+
+- block:
+    - name: validate packer template
+      shell: packer validate . > {{packer_log_file}} 2>&1
+      environment:
+        PATH: "/usr/local/packer/bin:{{ansible_env.PATH}}"
+      args:
+        chdir: "{{packer_build_dir}}"
+
+    - name: build packer template
+      shell: packer build . > {{packer_log_file}} 2>&1
+      environment:
+        PATH: "/usr/local/packer/bin:{{ansible_env.PATH}}"
+      args:
+        chdir: "{{packer_build_dir}}"
+  rescue:
+    - name: since we are in rescue block, set fact about build failure status
+      set_fact:
+        packer_build_failed: true
+
+- name: remove build related files
+  file: path={{item}} state=absent
+  with_items:
+    - "{{packer_build_dir}}"
+    - "{{playbook_dir}}/packer-build-tasks-{{packer_runtime}}.yml"
+
+- name: fail the build now if packer_build_failed is true
+  fail: msg="Packer binary build for {{packer_component}} failed. for more details, check {{packer_log_file}}"
+  when: packer_build_failed
+
+- name: include post file if it exists
+  include: post-build-tasks.yml
+
+- name: print build finish message
+  debug: msg="packer build completed"

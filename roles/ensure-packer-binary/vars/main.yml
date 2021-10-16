@@ -1,0 +1,6 @@
+---
+packer_version: 1.7.2
+# gather_facts should be yes for this to work.
+packer_arch_type:
+  'x86_64': 'amd64'
+  'aarch64': 'arm64'

@@ -1,0 +1,92 @@
+---
+- hosts: packerhost
+  gather_facts: yes
+  become: yes
+
+  vars:
+    pl_packer_artifacts_dir: "{{packer_artifacts_dir}}/{{packer_component}}"
+    pl_sensu_go_version: "{{sensu_go_version | default('6.5.0')}}"
+    pl_golang_version: "{{golang_version | default('1.15.15')}}"
+    pl_repo_id: "{{repo_head_commit_id}}"
+    pl_golang_file_option:
+      aarch64: arm64
+      x86_64: amd64
+    pl_sensu_go_repo: 'https://github.com/sensu/sensu-go.git'
+
+{% raw %}
+  tasks:
+    - name: get golang tar file
+      get_url:
+        url: "https://golang.org/dl/go{{pl_golang_version}}.{{ansible_system|lower}}-{{pl_golang_file_option[ansible_architecture]}}.tar.gz"
+        dest: "/tmp/go{{pl_golang_version}}.tar.gz"
+
+    - name: extract this downloaded file to golang base directory
+      unarchive: src=/tmp/go{{pl_golang_version}}.tar.gz dest=/usr/local remote_src=yes
+
+    - name: ensure git is present
+      yum: name=git
+
+    - name: checkout sensu go version mentioned with pl_sensu_go_version
+      git:
+        repo: "{{pl_sensu_go_repo}}"
+        dest: /tmp/sensu-go
+        version: "v{{pl_sensu_go_version}}"
+        force: yes
+
+    - name: build sensu go agent binary
+      shell: go build -ldflags '-X "github.com/sensu/sensu-go/version.Version={{pl_sensu_go_version}}" -X "github.com/sensu/sensu-go/version.BuildDate={{ansible_date_time.date}}" -X "github.com/sensu/sensu-go/version.BuildSHA='`git rev-parse --short HEAD`'"' -o bin/sensu-agent ./cmd/sensu-agent
+      environment:
+        PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"
+      args:
+        chdir: /tmp/sensu-go/
+
+    - name: build sensu go backend binary
+      shell: go build -ldflags '-X "github.com/sensu/sensu-go/version.Version={{pl_sensu_go_version}}" -X "github.com/sensu/sensu-go/version.BuildDate={{ansible_date_time.date}}" -X "github.com/sensu/sensu-go/version.BuildSHA='`git rev-parse --short HEAD`'"' -o bin/sensu-backend ./cmd/sensu-backend
+      environment:
+        PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"
+      args:
+        chdir: /tmp/sensu-go/
+
+    - name: build sensu go sensuctl binary
+      shell: go build -ldflags '-X "github.com/sensu/sensu-go/version.Version={{pl_sensu_go_version}}" -X "github.com/sensu/sensu-go/version.BuildDate={{ansible_date_time.date}}" -X "github.com/sensu/sensu-go/version.BuildSHA='`git rev-parse --short HEAD`'"' -o bin/sensuctl ./cmd/sensuctl
+      environment:
+        PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"
+      args:
+        chdir: /tmp/sensu-go/
+
+    - name: set fact about log details
+      set_fact:
+        pl_build_log_json:
+          RunTime: "{{ansible_date_time.date}}"
+          JenkinsJobName: "{{lookup('env', 'JOB_NAME')| default('NotRunFromJenkins', true)}}"
+          JenkinsJobBuildNumber: "{{lookup('env', 'BUILD_NUMBER')| default('NotRunFromJenkins', true)}}"
+          RepoHeadId: "{{pl_repo_id}}"
+          BuildGoVersion: "{{pl_golang_version}}"
+          SensuGoVersion: "{{pl_sensu_go_version}}"
+          BuildArchitecture: "{{ansible_architecture}}"
+        pl_build_file_name_suffix: "{{pl_sensu_go_version}}-{{ansible_distribution}}-{{ansible_distribution_major_version}}-{{ansible_architecture}}"
+
+    - name: create build log file
+      copy:
+        dest: /tmp/sensu-go/bin/build.log
+        content: "{{pl_build_log_json| to_nice_json}}"
+
+    - name: tar sensu backend, agent and ctl files along with build log
+      shell: tar -zcf /tmp/{{item}}-{{pl_build_file_name_suffix}}.tar.gz {{item}} build.log
+      args:
+        chdir: /tmp/sensu-go/bin
+      with_items:
+        - sensu-agent
+        - sensu-backend
+        - sensuctl
+
+    - name: fetch these files to local
+      fetch:
+        src: "/tmp/{{item}}-{{pl_build_file_name_suffix}}.tar.gz"
+        dest: "{{pl_packer_artifacts_dir}}/{{item}}-{{pl_build_file_name_suffix}}.tar.gz"
+        flat: yes
+      with_items:
+        - sensu-agent
+        - sensu-backend
+        - sensuctl
+{% endraw %}

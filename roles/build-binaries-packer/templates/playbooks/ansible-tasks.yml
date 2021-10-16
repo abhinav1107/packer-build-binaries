@@ -1,0 +1,98 @@
+---
+- hosts: packerhost
+  gather_facts: yes
+  become: yes
+
+  vars:
+    pl_packer_artifacts_dir: "{{packer_artifacts_dir}}/{{packer_component}}"
+    pl_python_version: "{{python_version|default('3.8.8')}}"
+    pl_ansible_version: "{{version_ansible|default('4.0.0')}}"
+    pl_ansible_core_version: "{{version_ansible_core|default('2.11.1')}}"
+    pl_repo_id: "{{repo_head_commit_id}}"
+    pl_ansible_core_dependencies:
+      - "pycrypto==2.6.1"
+      - "netaddr==0.8.0"
+
+{% raw %}
+  tasks:
+    - name: ensure yum-utils
+      yum: name=yum-utils
+
+    - name: perform yum-builddep python3
+      command: yum-builddep -y python3
+      no_log: yes
+
+    - name: get python source
+      get_url:
+        url: "https://www.python.org/ftp/python/{{pl_python_version}}/Python-{{pl_python_version}}.tgz"
+        dest: "/tmp/python-{{pl_python_version}}.tgz"
+
+    - name: extract this file
+      unarchive:
+        src: "/tmp/python-{{pl_python_version}}.tgz"
+        dest: /tmp
+        remote_src: yes
+
+    - name: set fact about some variables that we will be using
+      set_fact:
+        pl_build_log_json:
+          RunTime: "{{ansible_date_time.date}}"
+          JenkinsJobName: "{{lookup('env', 'JOB_NAME')| default('NotRunFromJenkins', true)}}"
+          JenkinsJobBuildNumber: "{{lookup('env', 'BUILD_NUMBER')| default('NotRunFromJenkins', true)}}"
+          RepoHeadId: "{{pl_repo_id}}"
+          PythonVersion: "{{pl_python_version}}"
+          AnsibleCoreVersion: "{{pl_ansible_core_version}}"
+          AnsibleVersion: "{{pl_ansible_version}}"
+          AnsibleCoreDependencies: "{{pl_ansible_core_dependencies}}"
+          BuildArchitecture: "{{ansible_architecture}}"
+        pl_build_file_name_suffix: "{{pl_ansible_core_version}}-{{pl_ansible_version}}-{{ansible_distribution}}-{{ansible_distribution_major_version}}-{{ansible_architecture}}"
+
+    - name: ensure /usr/local/ansible/python directory exists
+      file: path=/usr/local/ansible/python state=directory owner=root group=root mode=0755
+
+    - name: run configure command
+      shell: echo '===== configure =====' > /usr/local/ansible/build.log && ./configure --prefix=/usr/local/ansible/python >> /usr/local/ansible/build.log
+      args:
+        chdir: "/tmp/Python-{{pl_python_version}}"
+
+    - name: run make
+      shell: echo '===== make =====' >> /usr/local/ansible/build.log && make >> /usr/local/ansible/build.log
+      args:
+        chdir: "/tmp/Python-{{pl_python_version}}"
+
+    - name: run make install
+      shell: echo '===== make install =====' >> /usr/local/ansible/build.log && make install >> /usr/local/ansible/build.log
+      args:
+        chdir: "/tmp/Python-{{pl_python_version}}"
+
+    - name: install ansible, ansible core and its dependencies
+      shell: echo '===== pip install =====' >> /usr/local/ansible/build.log && pip3 install -U ansible=={{pl_ansible_version}} ansible-core=={{pl_ansible_core_version}} {{pl_ansible_core_dependencies| join(' ')}} --prefix=/usr/local/ansible/python >> /usr/local/ansible/build.log
+      environment:
+        PATH: "/usr/local/ansible/python/bin:{{ ansible_env.PATH }}"
+
+    - name: ensure /usr/local/ansible/bin directory
+      file: path=/usr/local/ansible/bin state=directory owner=root group=root mode=0755
+
+    - name: link all ansible binaries to bin path
+      command: ln -s ../python/bin/{{item.split('/')[-1]}} {{item.split('/')[-1]}}
+      args:
+        chdir: "/usr/local/ansible/bin"
+      with_fileglob:
+        - "/usr/local/ansible/python/bin/ansible*"
+
+    - name: create build log information file
+      copy:
+        content: "{{pl_build_log_json| to_nice_json}}"
+        dest: /usr/local/ansible/build-info.json
+
+    - name: compress the whole ansible directory
+      shell: 'tar -zcf /tmp/ansible-{{pl_build_file_name_suffix}}.tar.gz *'
+      args:
+        chdir: "/usr/local/ansible"
+
+    - name: fetch that compressed file
+      fetch:
+        src: "/tmp/ansible-{{pl_build_file_name_suffix}}.tar.gz"
+        dest: "{{pl_packer_artifacts_dir}}/ansible-{{pl_build_file_name_suffix}}.tar.gz"
+        flat: yes
+{% endraw %}

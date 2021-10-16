@@ -1,0 +1,26 @@
+---
+- name: check packer binary version. ignore error
+  command: packer --version
+  environment:
+    PATH: "/usr/local/packer/bin:{{ansible_env.PATH}}"
+  register: packer_bin_check
+  ignore_errors: yes
+
+- block:
+    - name: since something wrong has happened, get rid of the entire directory
+      file: path=/usr/local/packer state=absent
+
+    - name: now ensure packer bin path exists
+      file: path=/usr/local/packer/bin state=directory mode=0755 owner=root group=root
+
+    - name: get packer binary executable
+      get_url:
+        url: "https://releases.hashicorp.com/packer/{{packer_version}}/packer_{{packer_version}}_{{ansible_system|lower}}_{{packer_arch_type[ansible_architecture]}}.zip"
+        dest: "{{playbook_dir}}/packer.zip"
+
+    - name: extract this file to destination
+      unarchive: src={{playbook_dir}}/packer.zip dest=/usr/local/packer/bin owner=root group=root mode=0700
+
+    - name: remove downloaded zip file
+      file: path={{playbook_dir}}/packer.zip state=absent
+  when: packer_bin_check is failed or packer_version not in packer_bin_check.stdout

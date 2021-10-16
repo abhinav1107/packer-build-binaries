@@ -1,0 +1,13 @@
+---
+packer_artifacts_dir: "{{playbook_dir}}/packer-artifacts"
+packer_build_aws_instance_types:
+  # change these value as per your requirement
+  x86_64: "m5.xlarge"
+  aarch64: "m6g.xlarge"
+centos_account_id: 125523088429 # taken from https://wiki.centos.org/Cloud/AWS
+component_s3_upload_path:
+  'ansible': '<change_with_your_s3_bucket>/<change_with_your_s3_bucket_path>/ansible'
+  'sensu-go': '<change_with_your_s3_bucket>/<change_with_your_s3_bucket_path>/sensu-go'
+aws_security_group: "<change_with_your_value>"
+aws_subnet_id: "<change_with_your_value>"
+aws_vpc_id: "<change_with_your_value>"

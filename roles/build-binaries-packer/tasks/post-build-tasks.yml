@@ -1,0 +1,12 @@
+---
+# aws block for uploading files to aws s3. since prod can only write by default hence ht_environment condition
+- block:
+    - name: upload built packer artifacts to s3
+      command: >
+        aws --region {{aws_region}} s3 cp \
+        --acl public-read --quiet {{item}} s3://{{component_s3_upload_path[packer_component]}}/{{item.split('/')[-1]}}
+      with_fileglob:
+        - "{{packer_artifacts_dir}}/{{packer_component}}/*"
+  rescue:
+    - name: debug that uploading of built component binaries has failed
+      debug: msg="Uploading to s3 failed. Uppload them manually from {{packer_artifacts_dir}}/{{packer_component}} path"
